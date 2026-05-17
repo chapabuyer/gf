@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os  # Добавлено для работы с переменными окружения Render
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -13,8 +14,10 @@ from aiogram.types import (
     FSInputFile,
     CallbackQuery
 )
+# Импортируем веб-сервер для обхода усыпления Render Free Tier
+from aiohttp import web
 
-# ТОКЕН БОТА (Получи в @BotFather)
+# ТОКЕН БОТА (Сохранен оригинальный)
 TOKEN = "8610974193:AAGQNlFICUkS1mvTv_aNiobTk499LuwrdTw"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -22,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- ДИНАМИЧЕСКАЯ БАЗА ДАННЫХ ТОВАРОВ (ЦЕНЫ ТОЛЬКО В ГРИВНАХ) ---
+# --- ДИНАМИЧЕСКАЯ БАЗА ДАННЫХ ТОВАРОВ (ДАННЫЕ ПОЛНОСТЬЮ СОХРАНЕНЫ) ---
 PRODUCTS_DB = {
     "autoregs": {
         "title": "⚡ Автореги ⚡",
@@ -223,7 +226,7 @@ async def process_shop_buy(call: CallbackQuery):
     categories_text = "📍 **Выберите тип товара:**"
     try:
         photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(media=types.InputMediaPhoto(media=photo, caption=categories_text), reply_markup=get_categories_keyboard())
+        await call.message.edit_media(types.InputMediaPhoto(media=photo, caption=categories_text), reply_markup=get_categories_keyboard())
     except Exception:
         await call.message.edit_text(text=categories_text, reply_markup=get_categories_keyboard())
 
@@ -246,7 +249,6 @@ async def process_main_category(call: CallbackQuery):
     except Exception:
         await call.message.edit_text(text=countries_text, parse_mode="Markdown", reply_markup=get_countries_keyboard(category_code))
 
-# --- КАРТОЧКА ТОВАРА БЕЗ ЛИШНЕГО МУСОРА ---
 @dp.callback_query(F.data.startswith("selectgeo_"))
 async def process_geo_selection(call: CallbackQuery):
     await call.answer()
@@ -265,7 +267,6 @@ async def process_geo_selection(call: CallbackQuery):
         await call.message.answer("⚠️ Ошибка: Данное ГЕО временно недоступно.")
         return
     
-    # Полностью чистый текст без "nighttime" и ">"
     product_text = (
         f"🌍 **Страна:** {geo_info['name']} {geo_info['flag']}\n"
         f"📦 **Категория:** {cat_info['category_name']}\n"
@@ -379,8 +380,41 @@ async def process_back_to_main(call: CallbackQuery, state: FSMContext):
         pass
     await send_shop_main_menu(call.message)
 
+
+# --- ФУНКЦИИ ВЕБ-СЕРВЕРА ДЛЯ СВЯЗКИ С RENDER ---
+
+async def handle_root_request(request):
+    return web.Response(text="Storm Shop (FB Bot) is active!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_root_request)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Наш инфо-бот займет дефолтный порт, а шоп перенаправим на резервный,
+    # если они вдруг будут конкурировать, но для стабильности контейнера
+    # мы прописываем обработчик порта и здесь.
+    port = int(os.environ.get("PORT", 10000))
+    # В фоновом режиме запускаем проверку доступности
+    try:
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        print(f"[LOG] Фоновый веб-порт запущен на порту {port}")
+    except Exception:
+        # Если порт 10000 уже занят инфо-ботом (main_bot.py), шоп просто пропускает этот шаг
+        # и работает параллельно в потоке.
+        print("[LOG] Фоновый веб-порт занят основным ботом. Запуск в режиме демона.")
+
+
+# --- МОДИФИЦИРОВАННЫЙ ОСНОВНОЙ ЗАПУСК ---
+
 async def main():
     print("[LOG] Баг с текстом исправлен. Описания очищены.")
+    
+    # Запускаем фоновую сетевую заглушку
+    await start_web_server()
+    
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
