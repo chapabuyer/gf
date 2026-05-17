@@ -1,415 +1,333 @@
 import asyncio
 import logging
-import os
+import io
+import os  # Добавлено для работы с портами Render
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import (
-    Message, 
-    InlineKeyboardButton, 
-    InlineKeyboardMarkup, 
-    ReplyKeyboardMarkup, 
-    KeyboardButton,
-    FSInputFile,
-    CallbackQuery
-)
-# Импортируем веб-сервер для обхода ограничений Render Free Tier
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile, Message, CallbackQuery
+from config import TOKEN, ADMIN_ID
+import database as db
+from PIL import Image, ImageDraw, ImageFont
+# Импортируем веб-компоненты для обхода усыпления Render
 from aiohttp import web
 
-# ТОКЕН БОТА (Получи в @BotFather)
-TOKEN = "ТВОЙ_ТОКЕН_НОВОГО_БОТА"
-
+# Настройка логирования для отслеживания процессов в консоли
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- ДИНАМИЧЕСКАЯ БАЗА ДАННЫХ ТОВАРОВ (ЦЕНЫ ТОЛЬКО В ГРИВНАХ) ---
-PRODUCTS_DB = {
-    "autoregs": {
-        "title": "⚡ Автореги ⚡",
-        "category_name": "Автореги ⚡",
-        "tech_text": "Cookies, User-Agent, родная почта в комплекте. Идеально подходят для залива.",
-        "price_uah": 45,
-        "geos": {
-            "spain": {"name": "Испания", "flag": "🇪🇸", "count": 28},
-            "italy": {"name": "Италия", "flag": "🇮🇹", "count": 420},
-            "argentina": {"name": "Аргентина", "flag": "🇦🇷", "count": 45},
-            "brazil": {"name": "Бразилия", "flag": "🇧🇷", "count": 51}
-        }
-    },
-    "bm_pzrd": {
-        "title": "💎 БМ ПЗРД 💎",
-        "category_name": "БМ ПЗРД 💎",
-        "tech_text": "Бизнес Менеджер с пройденным запретом рекламной деятельности (ПЗРД). Лимит БМ 50.",
-        "price_uah": 195,
-        "geos": {
-            "spain": {"name": "Испания", "flag": "🇪🇸", "count": 10},
-            "italy": {"name": "Италия", "flag": "🇮🇹", "count": 10},
-            "argentina": {"name": "Аргентина", "flag": "🇦🇷", "count": 10},
-            "brazil": {"name": "Бразилия", "flag": "🇧🇷", "count": 10}
-        }
-    },
-    "manual_farm": {
-        "title": "⭐ Ручной фарм ПЗРД ⭐",
-        "category_name": "Ручной фарм ПЗРД ⭐",
-        "tech_text": "Высококачественные аккаунты ручного фарма с пройденным ПЗРД. Полностью готовы к запуску рекламы.",
-        "price_uah": 450,
-        "geos": {
-            "spain": {"name": "Испания", "flag": "🇪🇸", "count": 10},
-            "italy": {"name": "Италия", "flag": "🇮🇹", "count": 10},
-            "argentina": {"name": "Аргентина", "flag": "🇦🇷", "count": 10},
-            "brazil": {"name": "Бразилия", "flag": "🇧🇷", "count": 10}
-        }
-    },
-    "kings": {
-        "title": "👑 Кинги ПЗРД 👑",
-        "category_name": "👑 Кинги ПЗРД 👑",
-        "tech_text": "Топовые Кинг аккаунты (материнки) с пройденным ПЗРД для крепления личек и БМ.",
-        "price_uah": 775,
-        "geos": {
-            "spain": {"name": "Испания", "flag": "🇪🇸", "count": 10},
-            "italy": {"name": "Италия", "flag": "🇮🇹", "count": 10},
-            "argentina": {"name": "Аргентина", "flag": "🇦🇷", "count": 10},
-            "brazil": {"name": "Бразилия", "flag": "🇧🇷", "count": 10}
-        }
-    }
-}
-
-class BuyProductState(StatesGroup):
-    waiting_for_amount = State()
-
-
-# --- КЛАВИАТУРЫ ---
-
-def get_main_reply_keyboard():
-    buttons = [[KeyboardButton(text="⚡ Главное меню")]]
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-def get_main_inline_keyboard(balance=0):
+# Главное меню
+def get_start_keyboard():
     buttons = [
-        [InlineKeyboardButton(text=f"💰 Баланс ({balance}₴)", callback_data="shop_balance")],
         [
-            InlineKeyboardButton(text="⚡ Купить", callback_data="shop_buy"),
-            InlineKeyboardButton(text="🛍 Товары", callback_data="shop_products")
+            InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"),
+            InlineKeyboardButton(text="🤖 Боты", callback_data="my_bots")
         ],
         [
-            InlineKeyboardButton(text="🛒 Мои заказы", callback_data="shop_orders"),
-            InlineKeyboardButton(text="📜 Правила", callback_data="shop_rules")
+            InlineKeyboardButton(text="❓ FAQ (Наш канал)", url="https://t.me/+8BsLCFy3o_RiMDVh")
         ],
-        [InlineKeyboardButton(text="🛟 Тех. Поддержка", url="https://t.me/твой_саппорт")]
+        [
+            InlineKeyboardButton(text="📚 Для ворка", callback_data="learning"),
+            InlineKeyboardButton(text="🎙 ГС", callback_data="voice_messages")
+        ],
+        [
+            InlineKeyboardButton(text="💳 Актуальные карты", callback_data="maps")
+        ],
+        [
+            InlineKeyboardButton(text="🎬 О проекте", callback_data="about_project")
+        ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_deposit_keyboard():
+# Меню раздела "Боты" (Кнопка ФБ + Назад)
+def get_bots_keyboard():
     buttons = [
-        [InlineKeyboardButton(text="👨‍💻 Через оператора [24/7]", url="https://t.me/твой_оператор")],
-        [InlineKeyboardButton(text="💲 Криптовалюта [AUTO]", callback_data="deposit_crypto")],
-        [InlineKeyboardButton(text="⚡ Главное меню", callback_data="back_to_main_menu")]
+        [InlineKeyboardButton(text="👥 ФБ", callback_data="bot_fb")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_back_to_deposit_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚡ Назад", callback_data="shop_balance")]])
-
-def get_categories_keyboard():
+# ИСПРАВЛЕНО: Теперь все кнопки идут строго вертикально (каждая на новой строчке)
+def get_learning_keyboard():
     buttons = [
-        [InlineKeyboardButton(text="⚡ Автореги ⚡", callback_data="maincat_autoregs")],
-        [InlineKeyboardButton(text="💎 БМ ПЗРД 💎", callback_data="maincat_bm_pzrd")],
-        [InlineKeyboardButton(text="Ручной фарм ПЗРД", callback_data="maincat_manual_farm")],
-        [InlineKeyboardButton(text="👑 Кинги ПЗРД", callback_data="maincat_kings")],
-        [InlineKeyboardButton(text="⚡ Главное меню", callback_data="back_to_main_menu")]
+        [InlineKeyboardButton(text="📖 Обучение и FAQ", url="https://t.me/+8BsLCFy3o_RiMDVh")],
+        [InlineKeyboardButton(text="🌐 Бесплатный прокси", url="https://t.me/ProxyMTProto")],
+        [InlineKeyboardButton(text="⭕ Сделать кружок", url="https://t.me/VideoInCircleBot")],
+        [InlineKeyboardButton(text="👩 Паки девушек", url="https://t.me/+uPwvor2qLdNhNGRi")],
+        [InlineKeyboardButton(text="🗣 Голосовые сообщения", url="https://t.me/+VKzsDnz_F_o3MGFh")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_all_products_list_keyboard():
-    buttons = []
-    for key, data in PRODUCTS_DB.items():
-        buttons.append([InlineKeyboardButton(text=data["title"], callback_data=f"maincat_{key}")])
-    buttons.append([InlineKeyboardButton(text="⚡ Главное меню", callback_data="back_to_main_menu")])
+# Стандартная кнопка "Назад" для остальных разделов
+def get_back_keyboard():
+    buttons = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_countries_keyboard(category_code):
-    buttons = [
-        [InlineKeyboardButton(text="Испания 🇪🇸", callback_data=f"selectgeo_{category_code}_spain")],
-        [InlineKeyboardButton(text="Италия 🇮🇹", callback_data=f"selectgeo_{category_code}_italy")],
-        [InlineKeyboardButton(text="Аргентина 🇦🇷", callback_data=f"selectgeo_{category_code}_argentina")],
-        [InlineKeyboardButton(text="Бразилия 🇧🇷", callback_data=f"selectgeo_{category_code}_brazil")],
-        [InlineKeyboardButton(text="⚡ Главное меню", callback_data="back_to_main_menu")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_product_keyboard(category_code, geo_code):
-    buttons = [
-        [InlineKeyboardButton(text="⚡ Перейти к покупке", callback_data=f"checkout_{category_code}_{geo_code}")],
-        [InlineKeyboardButton(text="⚡ Главное меню", callback_data="back_to_main_menu")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_back_only_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚡ Главное меню", callback_data="back_to_main_menu")]])
-
-
-# --- ОСНОВНЫЕ ХЭНДЛЕРЫ ---
-
-async def send_shop_main_menu(message: Message):
-    caption_text = "👋 Добро пожаловать в STORM SHOP!\n\nИспользуй меню ниже для навигации по магазину."
+# Функция генерации карточки по твоим точным координатам Image Map
+async def generate_profile_image(user_id, bot):
     try:
-        photo = FSInputFile("storm_banner.jpg")
-        await message.answer_photo(photo=photo, caption=caption_text, reply_markup=get_main_inline_keyboard(0))
+        background = Image.open("profile_bg.png").convert("RGBA")
+        draw = ImageDraw.Draw(background)
+
+        try:
+            user_profile_photos = await bot.get_user_profile_photos(user_id, limit=1)
+            if user_profile_photos.total_count > 0:
+                file_id = user_profile_photos.photos[0][-1].file_id
+                file = await bot.get_file(file_id)
+                
+                avatar_bytes = io.BytesIO()
+                await bot.download_file(file.file_path, avatar_bytes)
+                avatar_bytes.seek(0)
+                
+                avatar = Image.open(avatar_bytes).convert("RGBA")
+                avatar_size = (337, 317) 
+                avatar = avatar.resize(avatar_size)
+                
+                mask = Image.new("L", avatar_size, 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.rounded_rectangle([(0, 0), avatar_size], radius=45, fill=255)
+                
+                rounded_avatar = Image.new("RGBA", avatar_size, (0, 0, 0, 0))
+                rounded_avatar.paste(avatar, (0, 0), mask=mask)
+                
+                background.paste(rounded_avatar, (83, 205), mask=rounded_avatar)
+        except Exception as avatar_err:
+            logging.error(f"Не удалось загрузить аватарку для {user_id}: {avatar_err}")
+
+        days_in_team = 0
+        try:
+            join_date = await db.get_user_join_date(user_id)
+            if join_date:
+                days_in_team = (datetime.now() - join_date).days
+        except Exception as db_err:
+            logging.error(f"Ошибка при запросе даты из БД для {user_id}: {db_err}")
+            days_in_team = 0
+            
+        text_days = str(days_in_team)
+
+        font_path = "arial.ttf"  
+        try:
+            font_days = ImageFont.truetype(font_path, 65)  
+        except IOError:
+            logging.error("Файл arial.ttf не найден. Применен дефолтный шрифт.")
+            font_days = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), text_days, font=font_days)
+        w_text = bbox[2] - bbox[0]
+        h_text = bbox[3] - bbox[1]
+        
+        draw.text((634 - w_text / 2, 404 - h_text / 2), text_days, fill="#ffffff", font=font_days)
+
+        image_bytes = io.BytesIO()
+        background.save(image_bytes, format="PNG")
+        image_bytes.seek(0)
+        
+        return BufferedInputFile(image_bytes.read(), filename="profile.png")
+
+    except Exception as e:
+        logging.error(f"Критическая ошибка внутри generate_profile_image: {e}")
+        return None
+
+# Вспомогательная функция отправки профиля
+async def process_and_send_profile(user, target_message: Message, bot: Bot):
+    try:
+        user_id = user.id
+        username = f"@{user.username}" if user.username else user.first_name
+        user_role = "Воркер"
+        user_rep = 0
+
+        profile_photo = await generate_profile_image(user_id, bot)
+        
+        if profile_photo:
+            caption_text = (
+                f"🚨 Профиль {username}\n\n"
+                f"  ID: `{user_id}`\n\n"
+                f"  🦅 Должность: {user_role}\n"
+                f"  ┗ Репутация: {user_rep} 👍"
+            )
+            await target_message.answer_photo(
+                photo=profile_photo,
+                caption=caption_text,
+                parse_mode="Markdown",
+                reply_markup=get_back_keyboard()
+            )
+        else:
+            await target_message.answer("❌ Ошибка: Скрипт не смог собрать картинку профиля. Проверьте логи.")
+    except Exception as e:
+        error_message = f"❌ Ошибка хэндлера профиля: {type(e).__name__} -> {str(e)}"
+        logging.error(error_message)
+        await target_message.answer(error_message)
+
+# Функция отправки главного меню
+async def send_main_menu(user_id, full_name, target_message: Message):
+    try:
+        await db.add_user(user_id)
+    except Exception as db_err:
+        logging.error(f"Не удалось добавить пользователя в БД: {db_err}")
+        
+    caption_text = f"Привет, {full_name}! 👋\n\nДобро пожаловать в GUCCI FAM.\nВыбирай нужный раздел на кнопках меню:"
+    try:
+        photo = FSInputFile("start_banner.jpg") 
+        await target_message.answer_photo(photo=photo, caption=caption_text, reply_markup=get_start_keyboard())
     except Exception:
-        await message.answer(text=caption_text, reply_markup=get_main_inline_keyboard(0))
+        await target_message.answer(caption_text, reply_markup=get_start_keyboard())
+
+# --- ХЭНДЛЕРЫ ---
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Магазин запущен.", reply_markup=get_main_reply_keyboard())
-    await send_shop_main_menu(message)
+async def cmd_start(message: Message):
+    try: await message.delete()
+    except Exception: pass
+    await send_main_menu(message.from_user.id, message.from_user.full_name, message)
 
-@dp.message(F.text == "⚡ Главное меню")
-async def process_main_menu_button(message: Message, state: FSMContext):
-    await state.clear()
-    await send_shop_main_menu(message)
+@dp.message(Command("profile"))
+async def show_profile_message(message: Message, bot: Bot):
+    try: await message.delete()
+    except Exception: pass
+    await process_and_send_profile(message.from_user, message, bot)
 
-
-# --- ОБРАБОТКА ИНЛАЙН НАЖАТИЙ ---
-
-@dp.callback_query(F.data == "shop_rules")
-async def process_shop_rules(call: CallbackQuery):
+@dp.callback_query(F.data == "profile")
+async def show_profile_callback(call: CallbackQuery, bot: Bot):
     await call.answer()
-    rules_text = (
-        "📜 **Правила нашего магазина STORM SHOP:**\n\n"
-        "1. ⚠️ **Проверка товара:** На проверку купленных аккаунтов / БМ дается 20 минут с момента покупки.\n"
-        "2. 🛑 **Правила замены:** Замена производится только в случае невалидности аккаунта ДО совершения вами любых действий. Если вы успели запустить рекламу, привязать карту или совершить иные действия — замена невозможна.\n"
-        "3. 💲 **Баланс:** Средства, внесенные на баланс магазина, не подлежат возврату и могут быть потрачены только на покупку позиций из ассортимента.\n\n"
-        " Покупая товар, вы автоматически соглашаетесь с данными правилами."
+    try: await call.message.delete()
+    except Exception: pass
+    
+    status_message = await call.message.answer("🔄 Синхронизация данных...")
+    await asyncio.sleep(0.1)
+    try:
+        await process_and_send_profile(call.from_user, call.message, bot)
+    finally:
+        try: await status_message.delete()
+        except Exception: pass
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu_callback(call: CallbackQuery):
+    await call.answer()
+    try: await call.message.delete()
+    except Exception: pass
+    await send_main_menu(call.from_user.id, call.from_user.full_name, call.message)
+
+# РАЗДЕЛ БОТЫ
+@dp.callback_query(F.data == "my_bots")
+async def open_bots(call: CallbackQuery):
+    await call.answer()
+    try: await call.message.delete()
+    except Exception: pass
+    await call.message.answer("🤖 Выберите интересующего вас бота из списка:", reply_markup=get_bots_keyboard())
+
+# ПОДРАЗДЕЛ ФБ
+@dp.callback_query(F.data == "bot_fb")
+async def open_bot_fb(call: CallbackQuery):
+    await call.answer()
+    try: await call.message.delete()
+    except Exception: pass
+    
+    fb_info_text = (
+        f"👥 **ФБ**\n\n"
+        f"🤖 **Бот для ворка:**\n"
+        f" ┗ @StormsShopBot\n\n"
+        f"📚 **Мануалы:**\n"
+        f" ┗ [Мануал по ФБ](https://t.me/+eaAMi8nA-UA5YWQx)\n\n"
     )
-    try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(
-            media=types.InputMediaPhoto(media=photo, caption=rules_text, parse_mode="Markdown"),
-            reply_markup=get_back_only_keyboard()
-        )
-    except Exception:
-        await call.message.edit_text(text=rules_text, parse_mode="Markdown", reply_markup=get_back_only_keyboard())
+    await call.message.answer(fb_info_text, parse_mode="Markdown", reply_markup=get_back_keyboard(), disable_web_page_preview=True)
 
-@dp.callback_query(F.data == "shop_orders")
-async def process_shop_orders(call: CallbackQuery):
+# РАЗДЕЛ ДЛЯ ВОРКА
+@dp.callback_query(F.data == "learning")
+async def open_learning(call: CallbackQuery):
     await call.answer()
-    orders_text = "🛒 **История ваших заказов:**\n\n📭 _Вы еще не совершали покупок в нашем магазине._"
-    try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(
-            media=types.InputMediaPhoto(media=photo, caption=orders_text, parse_mode="Markdown"),
-            reply_markup=get_back_only_keyboard()
-        )
-    except Exception:
-        await call.message.edit_text(text=orders_text, parse_mode="Markdown", reply_markup=get_back_only_keyboard())
+    try: await call.message.delete()
+    except Exception: pass
+    await call.message.answer("📚 **Инструменты и мануалы для эффективного ворка:**", parse_mode="Markdown", reply_markup=get_learning_keyboard())
 
-@dp.callback_query(F.data == "shop_products")
-async def process_all_products_view(call: CallbackQuery):
-    await call.answer()
-    products_text = "📍 **Ассортимент нашего магазина:**"
-    try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(
-            media=types.InputMediaPhoto(media=photo, caption=products_text, parse_mode="Markdown"),
-            reply_markup=get_all_products_list_keyboard()
-        )
-    except Exception:
-        await call.message.edit_text(text=products_text, parse_mode="Markdown", reply_markup=get_all_products_list_keyboard())
 
-@dp.callback_query(F.data == "shop_buy")
-async def process_shop_buy(call: CallbackQuery):
+@dp.callback_query(F.data == "voice_messages")
+async def open_voice(call: CallbackQuery):
     await call.answer()
-    categories_text = "📍 **Выберите тип товара:**"
-    try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(media=types.InputMediaPhoto(media=photo, caption=categories_text), reply_markup=get_categories_keyboard())
-    except Exception:
-        await call.message.edit_text(text=categories_text, reply_markup=get_categories_keyboard())
+    try: await call.message.delete()
+    except Exception: pass
+    await call.message.answer("Запись голосовых сообщений и звонки. в случае если мамонт просит ГС или звонок. За прозвоном обращайтесь в чат.", reply_markup=get_back_keyboard())
 
-@dp.callback_query(F.data.startswith("maincat_"))
-async def process_main_category(call: CallbackQuery):
+@dp.callback_query(F.data == "maps")
+async def open_maps(call: CallbackQuery):
     await call.answer()
-    category_code = call.data.replace("maincat_", "")
+    try: await call.message.delete()
+    except Exception: pass
+    await call.message.answer("🇺🇦 - 4400 0055 5151 7177", reply_markup=get_back_keyboard())
+
+# ИСПРАВЛЕНО И ОБНОВЛЕНО: Новый text для раздела "О проекте"
+@dp.callback_query(F.data == "about_project")
+async def open_about(call: CallbackQuery):
+    await call.answer()
+    try: await call.message.delete()
+    except Exception: pass
     
-    if category_code not in PRODUCTS_DB:
-        await call.message.answer("⚠️ Данный раздел временно пуст или находится в разработке.")
-        return
-        
-    countries_text = "📍 **Выберите категорию:**"
-    try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(
-            media=types.InputMediaPhoto(media=photo, caption=countries_text, parse_mode="Markdown"),
-            reply_markup=get_countries_keyboard(category_code)
-        )
-    except Exception:
-        await call.message.edit_text(text=countries_text, parse_mode="Markdown", reply_markup=get_countries_keyboard(category_code))
-
-@dp.callback_query(F.data.startswith("selectgeo_"))
-async def process_geo_selection(call: CallbackQuery):
-    await call.answer()
-    
-    data_parts = call.data.split("_")
-    geo_code = data_parts[-1]
-    category_code = "_".join(data_parts[1:-1])
-    
-    cat_info = PRODUCTS_DB.get(category_code)
-    if not cat_info:
-        await call.message.answer("⚠️ Ошибка: Категория не найдена. Вернитесь в Главное меню.")
-        return
-        
-    geo_info = cat_info["geos"].get(geo_code)
-    if not geo_info:
-        await call.message.answer("⚠️ Ошибка: Данное ГЕО временно недоступно.")
-        return
-    
-    product_text = (
-        f"🌍 **Страна:** {geo_info['name']} {geo_info['flag']}\n"
-        f"📦 **Категория:** {cat_info['category_name']}\n"
-        f"📝 **Описание товара:** {cat_info['tech_text']}\n\n"
-        f"💰 **Цена:** {cat_info['price_uah']}₴ / шт.\n"
-        f"📉 **В наличии:** {geo_info['count']} шт."
+    about_text = (
+        "🏛 **О проекте • GUCCI FAM**\n\n"
+        "    Дата запуска: 07.05.2026.\n\n"
+        "🎯 **Статистика**\n\n"
+        "    Количество профитов: 73.\n"
+        "    Общая сумма профитов: N/A.\n\n"
+        "🥩 **Выплаты воркерам**\n\n"
+        "    Самостоятельно - 60%\n"
+        "    Процент платы за наставничество выбирает сам наставник (указан в боте)\n"
+        "    Работа с ТП - 50%\n\n"
+        "💥 **Рабочие сервисы**\n\n"
+        "    Нарко 🧪\n"
+        "    Шантаж 👨‍👩‍👦\n"
+        "    ФБ 👥"
     )
+    await call.message.answer(about_text, parse_mode="Markdown", reply_markup=get_back_keyboard())
+
+@dp.message(Command("broadcast"))
+async def broadcast(message: Message):
+    if message.from_user.id != ADMIN_ID: return
+    text = message.text.replace("/broadcast", "").strip()
+    if not text: return await message.answer("Пиши: `/broadcast твой текст`")
     
     try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(
-            media=types.InputMediaPhoto(media=photo, caption=product_text, parse_mode="Markdown"),
-            reply_markup=get_product_keyboard(category_code, geo_code)
-        )
-    except Exception:
-        await call.message.edit_text(text=product_text, parse_mode="Markdown", reply_markup=get_product_keyboard(category_code, geo_code))
-
-@dp.callback_query(F.data.startswith("checkout_"))
-async def process_checkout(call: CallbackQuery, state: FSMContext):
-    await call.answer()
-    
-    data_parts = call.data.split("_")
-    geo_code = data_parts[-1]
-    category_code = "_".join(data_parts[1:-1])
-    
-    cat_info = PRODUCTS_DB.get(category_code)
-    if not cat_info:
-        await call.message.answer("⚠️ Ошибка при формировании заказа. Вернитесь в Главное меню.")
-        return
-        
-    geo_info = cat_info["geos"].get(geo_code)
-    
-    info_text = (
-        f"🌍 **Страна:** {geo_info['name']} {geo_info['flag']}\n"
-        f"📦 **Категория:** {cat_info['category_name']}\n"
-        f"📝 **Описание товара:** {cat_info['tech_text']}\n\n"
-        f"💰 **Цена:** {cat_info['price_uah']}₴ / шт.\n"
-        f"📉 **В наличии:** {geo_info['count']} шт.\n\n"
-        f"✍️ **Введите необходимое кол-во товара для покупки:**"
-    )
-    
-    await state.update_data(cat_code=category_code, geo_code=geo_code)
-    await state.set_state(BuyProductState.waiting_for_amount)
-    
-    back_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚡ Главное меню", callback_data="back_to_main_menu")]])
-    try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(
-            media=types.InputMediaPhoto(media=photo, caption=info_text, parse_mode="Markdown"),
-            reply_markup=back_kb
-        )
-    except Exception:
-        await call.message.edit_text(text=info_text, parse_mode="Markdown", reply_markup=back_kb)
-
-@dp.message(BuyProductState.waiting_for_amount)
-async def process_amount_input(message: Message, state: FSMContext):
-    if not message.text.isdigit() or int(message.text) <= 0:
-        await message.answer("❌ Пожалуйста, введите корректное число больше нуля:")
-        return
-        
-    amount = int(message.text)
-    user_data = await state.get_data()
-    
-    cat_info = PRODUCTS_DB.get(user_data["cat_code"])
-    geo_info = cat_info["geos"].get(user_data["geo_code"])
-    
-    if amount > geo_info["count"]:
-        await message.answer(f"❌ Недостаточно товара! Доступно всего: {geo_info['count']} шт.\nВведите другое количество:")
-        return
-        
-    total_price = amount * cat_info["price_uah"]
-    await state.clear()
-    
-    await message.answer(
-        f"🛒 **Заказ сформирован!**\n\n"
-        f"📦 Товар: {cat_info['title']} ({geo_info['name']} {geo_info['flag']})\n"
-        f"🔢 Количество: {amount} шт.\n"
-        f"💰 Сумма к оплате: **{total_price}₴**\n\n"
-        f"ℹ️ _Для завершения покупки на вашем балансе должно быть достаточно средств._",
-        parse_mode="Markdown",
-        reply_markup=get_main_reply_keyboard()
-    )
-
-@dp.callback_query(F.data == "shop_balance")
-async def process_shop_balance(call: CallbackQuery):
-    await call.answer()
-    deposit_text = "💰 **Выберите способ пополнения:**"
-    try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(media=types.InputMediaPhoto(media=photo, caption=deposit_text, parse_mode="Markdown"), reply_markup=get_deposit_keyboard())
-    except Exception:
-        await call.message.edit_text(text=deposit_text, parse_mode="Markdown", reply_markup=get_deposit_keyboard())
-
-@dp.callback_query(F.data == "deposit_crypto")
-async def process_deposit_crypto(call: CallbackQuery):
-    await call.answer()
-    crypto_text = "💲 **Пополнение криптовалютой**\n\n**USDT TRC20:**\n\n`TPMvDfCXSUqzR7R3YC5PTvbjDQ4oaD8mV5`\n\n_После перевода отправьте хэш транзакции в чат, средства автоматически зачислятся на баланс._"
-    try:
-        photo = FSInputFile("storm_banner.jpg")
-        await call.message.edit_media(media=types.InputMediaPhoto(media=photo, caption=crypto_text, parse_mode="Markdown"), reply_markup=get_back_to_deposit_keyboard())
-    except Exception:
-        await call.message.edit_text(text=crypto_text, parse_mode="Markdown", reply_markup=get_back_to_deposit_keyboard())
-
-@dp.callback_query(F.data == "back_to_main_menu")
-async def process_back_to_main(call: CallbackQuery, state: FSMContext):
-    await call.answer()
-    await state.clear()
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    await send_shop_main_menu(call.message)
+        users = await db.get_all_users()
+        count = 0
+        for user_id in users:
+            try:
+                await bot.send_message(user_id, text)
+                count += 1
+            except: pass
+        await message.answer(f"✅ Рассылка на {count} человек завершена.")
+    except Exception as e:
+        await message.answer(f"Ошибка рассылки: {e}")
 
 
-# --- ФУНКЦИИ ДЛЯ РАБОТЫ ВЕБ-СЕРВЕРА (ОБХОД СУПЕР-ТАРИФА RENDER) ---
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER FREE TIER ---
 
 async def handle_root_request(request):
-    """Возвращает простой текст, чтобы Render видел, что сервис 'жив'"""
-    return web.Response(text="Storm Shop Bot is running successfully!")
+    return web.Response(text="Gucci Fam Main Bot is active!")
 
 async def start_web_server():
-    """Запускает мини веб-сервер на порту, который выделит Render"""
     app = web.Application()
     app.router.add_get('/', handle_root_request)
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # Render автоматически передает нужный порт в переменную окружения PORT
-    port = int(os.environ.get("PORT", 10000)) 
+    # Подхватываем порт от инстанса Render
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"[LOG] Микро веб-сервер успешно запущен на порту {port}")
+    logging.info(f"Микро веб-сервер поднят на порту {port}")
 
 
-# --- ОСНОВНОЙ ЗАПУСК ---
+# --- ЗАПУСК ---
 
 async def main():
-    print("[LOG] Запуск бота магазина и фонового веб-компонента...")
+    try: await db.init_db()  
+    except Exception as db_err: logging.error(f"Не удалось инициализировать БД в main: {db_err}")
     
-    # 1. Запускаем заглушку веб-сервера для Render
+    # Сначала поднимаем веб-сервер, чтобы Render пропустил деплой
     await start_web_server()
-    
-    # 2. Очищаем вебхуки и запускаем Long Polling самого бота
+        
+    print("[LOG] Бот GUCCI FAM успешно запущен и готов к работе!")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
